@@ -1,0 +1,179 @@
+---
+title: "Coursera Practical Machine Learning Assignment"
+author: "Gerrit Timmerhaus"
+date: "April 27, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Small portable devices like Jawbone Up, Nike FuelBand, and Fitbit allow to record large amounts of personal activity data relatively inexpensively. In this assignment, sensor data from correct and incorrect movements of dumbbell lifts were used to fit and validate a machine learning model. The data came from the Human Activity Recognition Project. The projet description and further information can be found on the website http://groupware.les.inf.puc-rio.br/har. 
+
+To collect the data, six young and healthy participants were asked to perform one set of 10 repetitions of the unilateral dumbbell biceps curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). The participants were wearing sensors on belt, forearm, arm and the dumbbell. These data were used to fit a random forest model. The resulting model was able to predict the class with very high precision (>99.8% accuracy).
+
+
+## Exploratory Data Analysis and Filtering
+
+The data was downloaded directly from the internet. Missing values and "#DIV/0!"-values were replaced by NA. The caret library was loaded and the seet was set to ensure consistent results.
+
+```{r}
+training <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", 
+                     na.strings = c("", "NA", "#DIV/0!"), stringsAsFactors = F)
+testing  <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",  
+                     na.strings = c("", "NA", "#DIV/0!"), stringsAsFactors = F)
+library(caret)
+set.seed(1)
+```
+
+The functions *dim* and *table* were used to get a first overview over the data:
+
+```{r}
+dim(training)
+table(training$classe, training$user_name)
+#table(testing$problem_id, testing$user_name)
+which(names(training) != names(testing))
+```
+
+Testing contained 19622 observations and testing contained 20. Both data sets had the same number of columns (160) and the same column names except the last column. This column contained the class (*classe*) identifier for the training set (A-E) and for testing the *problem_ID*, a number from 1 to 20. The training data set was used to fit and validat the prediction model in the following sections. The testing data set was used for the Coursera Prediction Quiz in the last section.
+
+A large number of columns contain mostly NAs; thus, NAs were counted in each column and plotted in a histogram:
+
+```{r}
+nas <- apply(training, 2, function(x) sum(is.na(x)))
+hist(nas, xlab="number of NAs", col="grey", main="Histogram of NAs")
+```
+
+The histogram showed that 100 columns contained very high proportions of NAs and 60 columns contained almost no NAs. The 100 NA-rich columns were removed from the data sets. In addition, the first 6 columns were removed from the data set (containing date, time, participant name etc.), because they were not relevant for the further analysis.
+
+```{r}
+training <- training[,nas<1000]
+testing <- testing[,nas<1000]
+training <- training[,-1:-6]
+testing <- testing[,-1:-6]
+```
+
+The correlations ($R^2$) between the remaining 54 columns were checked in a cluster dendrogram. The distance matrix was calculated from the formula $1-R^2$:
+
+```{r}
+#cluster according to correaltion:
+distance <- as.dist(1-(cor(training[,-54])^2))
+plot(hclust(distance)) 
+```
+
+This showed that many of the variables were strongly correlated to each other. Thus, the number of predictors can probably be reduced in the model building.
+
+The data set was split into an actual training set (60%) and a validation set (40%). In addition, a smaller data set (5%) was created, which was only used to identify the most important predictors.
+
+```{r}
+temp <- createDataPartition(y=training$classe, p=0.60, list=FALSE)
+training1  <- training[temp,]
+validation  <- training[-temp,]
+training_short <- training[createDataPartition(y=training$classe, p=0.05, list=FALSE),]
+```
+
+
+## Modeling
+
+### Data Reduction
+
+The random forest algorithm from the *carot* package was used to calculate a first model to discriminate the *classe* variable in the short training set by using all available 53 columns. 
+
+```{r}
+rf_model<-train(classe~., data=training_short, method="rf")
+```
+
+This small data set took several minutes to calculate; thus, the data was reduced for the following models. The function *varImp* was used on the first model to identify the relative importance of the variables:
+
+```{r}
+varImp(rf_model)
+```
+
+The top ten variables were kept for further analysis:
+
+```{r}
+top <- cbind(name = rownames(varImp(rf_model)[[1]]), value = varImp(rf_model)[[1]])
+selection <- as.character(top[order(top[,2], decreasing = T),][1:10,1])
+#add classe:
+selection <- c(selection, "classe")
+#select only the top10 columns:
+training1 <- training1[selection]
+validation <- validation[selection]
+```
+
+This resulted in data sets with 10 predictor columns (plus the class column). The correlation between the remaining variables was checked once more:
+
+```{r}
+distance <- as.dist(1-(cor(training1[,-11])^2))
+plot(hclust(distance)) 
+```
+
+A strong correlation was found between *roll\_belt* and *accel\_belt\_z*. Thus, *accel\_belt\_z* (which had a lower relative importance) was removed from the data set, leaving 9 predictors.
+
+```{r}
+training1 <- training1[, - grep("accel_belt_z", names(training1))]
+validation <- validation[, - grep("accel_belt_z", names(validation))]
+```
+
+
+### Random Forest Model
+
+A model was calculated from the training set with the random forest algorithm:
+
+```{r}
+modelRF<-train(classe~., data=training1, method="rf")
+```
+
+The calculation of the model took about 7 minutes (Intel Xeon W3530 quat core CPU with 2.8 GHz, Windows 7 64-bit). 
+
+### Model validation
+
+The model was validated with the validation data set:
+
+```{r}
+predicted <- predict(modelRF, newdata=validation)
+confusionMatrix(predicted, validation$classe)
+```
+
+The accuracy was 99.8%. This value was very high for machine learning predictions. 
+
+Another way to describe the predictive power of a model is to state the out of sample error rate, which is the proportion of wrongly classified cases in the validation set. To estimate this rate, the number of incorrectly predicted cases was divided by the total number of cases:
+
+```{r}
+length(which(predicted!=validation$classe))
+length(validation$classe) 
+length(which(predicted!=validation$classe)) / length(validation$classe) 
+```
+
+This resulted in an out of sample error rate of 0.25%. The model predicted only 20 out of 7846 cases incorrectly.
+
+## Conclusion
+
+The initial data set was cleaned from columns consisting mostly of missing values. This resulted in a set of 54 variables, which were tested for relative importance with an initial random forest model. The most important (and not highly correlated) 9 variables were kept for the final model calculation.
+
+The final model was calculated by the random forest method of the caret package. The model predicted the validation data set with 99.8% accuracy and an error rate of 0.25%. The model was extremely precise in the prediction, which indicated that the five classes of movement were very distinctive. To verify the model further, it would be of high interest to record new data with different participants and test the performance of the model on the new data. 
+
+
+
+## Predicting the test cases
+
+The 20 cases from the *testing* data set were predicted and displayed as a data frame.
+
+```{r}
+data.frame(testing$problem_id, predicted = predict(modelRF, newdata=testing))
+```
+
+The results were used to solve the Course Project Prediction Quiz of the Coursera Practical Machine learning course.
+
+
+
+
+
+
+
+
+
+
